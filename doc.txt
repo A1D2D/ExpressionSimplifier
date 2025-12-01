@@ -1,0 +1,28 @@
+ExpressionSimplifier:
+-A program 3 fajta bemenetet vessz be, minterm indexeket, maxterm indexeket és bool algebra egyenleteket.
+ A minterm és maxtermek megadása esetén a program a prímimplikánsok megkeresésével dolgozik és aztán ez kerül a kimenetre
+
+-Bementetek:
+A három bemenet fajtának jelölése:
+  Minterm:Nin[változók száma](minterek)(közömbös minterek)
+  Maxterm:Max[változók száma](maxtermek)(közömbös maxtermek)
+  Bool algebra egyenlet: Exp(egyenlet)
+  
+A bool algebra egyenletben a bármilyen változó név szerepelhet amit a string képes eltárolni és nem tartalmaz \n szóközt vagy olyan karaktert ami operátor.
+A bemenetet egy fájl beolvasásával is megkaphatja a program, ami több sort(problémát) is tartalmazhat.
+
+-Kimenet: egyenlet
+
+A mintermek és a maxtermek esetén az egyenletben ezek a változó nevek szerepelhetnek:
+  a b c d e f g 
+  h i j k l m n 
+  o p q r s t u 
+  v w x y z 
+  A B C D E F G 
+  H I J K L M N 
+  O P Q R S T U 
+  V W X Y Z 
+  A1 B1 C1 D1 E1 F1 G1 H1 I1 J1 K1 L1
+
+A bool algebrai egyenlet esetében pedig megmaradnak az eredeti változók nevei az egyszerűsített alakban.
+A kimenet kiírásra kerül de közben egy fájlba is íródik.
