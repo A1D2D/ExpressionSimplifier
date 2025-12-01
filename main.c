@@ -23,6 +23,12 @@ typedef enum {
    Opt = '~'
 } Term;
 
+typedef struct {
+   Term termType;
+   unsigned int place;
+   unsigned int binaryWeight;
+} PrimeTerm;
+
 typedef enum {
    Minterm,
    Maxterm,
@@ -336,6 +342,7 @@ Term* parse_term(Expr expr) {
    return out;
 }
 
+//*OLD_IMPL*//
 PrimeImplicant* parse_prime(const Term* terms, unsigned int count, unsigned int* implicantCount) {
    if (!terms) return NULL;
    *implicantCount = 0;
@@ -448,9 +455,49 @@ PrimeImplicant* removeDuplicates(const PrimeImplicant* implicants, unsigned int 
 
    return out;
 }
+//*~OLD_IMPL*//
 
+//*NEW_IMPL*//
+PrimeTerm* getPrimeTerms(const Term* terms, unsigned int count, unsigned int* out_count) {
+   *out_count = 0;
+   for (int i = 0; i < (1 << count); i++) {
+      if (terms[i] == Zero) continue;
+      (*out_count)++;
+   }
 
+   PrimeTerm* out = malloc((*out_count) * sizeof(PrimeTerm));
+   if (!out) return NULL;
 
+   int j = 0;
+   for (unsigned int i = 0; i < (1 << count); i++) {
+      if (terms[i] == Zero) continue;
+      out[j].place = i;
+      out[j].termType = terms[i];
+      out[j++].binaryWeight = countOnes(i);
+   }
+
+   return out;
+}
+
+void orderPrimeTerms(PrimeTerm* primeTerms, unsigned int count) {
+   for (int i = 0; i < count; i++) {
+      for (int j = i; j < count; j++) {
+         if (primeTerms[i].binaryWeight <= primeTerms[j].binaryWeight) continue;
+         PrimeTerm temp = primeTerms[i];
+         primeTerms[i] = primeTerms[j];
+         primeTerms[j] = temp;
+      }
+   }
+}
+//*~NEW_IMPL*//
+typedef struct TermNode {
+   struct TermNode* next;
+   unsigned int term;
+} TermNode;
+typedef struct BucketNode {
+   struct Bucket* next;
+   TermNode* terms;
+} Bucket;
 
 int main(void) {
    const char* input = "Min[4](0,1,3,2,4,5,7)(13)";
@@ -459,25 +506,26 @@ int main(void) {
    if (parse_expr(input, &expr)) {
    }
    Term* terms = parse_term(expr);
-   unsigned int implicantCount = 0;
-   PrimeImplicant* primeImplicants = parse_prime(terms, expr.var_count, &implicantCount);
 
    printEmptyTable(expr.var_count);
    printf("\n");
    printTable(expr.var_count, terms);
 
-   growAllImplicants(primeImplicants, implicantCount, terms, expr.var_count);
-   free(terms);
-
-
-   PrimeImplicant* cutImplicants = removeDuplicates(primeImplicants, implicantCount, &implicantCount);
-   free(primeImplicants);
-
-   for (int i = 0; i < implicantCount; i++) {
-      printPrimeImplicant(cutImplicants[i], expr.var_count);
+   unsigned int primeTermCount = 0;
+   PrimeTerm* primeTerms = getPrimeTerms(terms, expr.var_count, &primeTermCount);
+   if (!primeTerms) {
+      free(terms);
+      return 0;
    }
 
-   free(cutImplicants);
+   orderPrimeTerms(primeTerms, primeTermCount);
+
+   for (int i = 0; i < primeTermCount; i++) {
+      printf("PTerm: %c %u %u \n", primeTerms[i].termType, primeTerms[i].place, primeTerms[i].binaryWeight);
+   }
+
+   free(terms);
+   free(primeTerms);
 
    return 0;
 }
