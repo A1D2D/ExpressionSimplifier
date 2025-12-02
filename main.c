@@ -3,18 +3,8 @@
 #include <string.h>
 #include <ctype.h>
 
-#define FlagDef(ID) (1LL << ((ID)-1))
-#define HasFlag(flags, flag) (((flags) & (flag)) != 0)
-#define HasNoFlag(flags, flag) (((flags) & (flag)) == 0)
-#define AddFlag(flags, flag) ((flags) |= (flag))
-#define RemoveFlag(flags, flag) ((flags) &= ~(flag))
-#define ToggleFlag(flags, flag) ((flags) ^= (flag))
-#define SetFlag(flags, flag, condition) ((condition) ? AddFlag(flags, flag) : RemoveFlag(flags, flag))
-
-#define true 1
-#define false 0
-
-typedef char bool;
+#include "Helpers.h"
+#include "Queues.h"
 
 typedef enum {
    Unset = 0,
@@ -22,12 +12,6 @@ typedef enum {
    Zero = '0',
    Opt = '~'
 } Term;
-
-typedef struct {
-   Term termType;
-   unsigned int place;
-   unsigned int binaryWeight;
-} PrimeTerm;
 
 typedef enum {
    Minterm,
@@ -49,6 +33,28 @@ typedef struct {
    unsigned __int64 taggedVariablesFlag;
    unsigned __int64 flippedVariablesFlag;
 }  PrimeImplicant;
+
+typedef struct {
+   Queue terms;
+} NPrimeImplicant;
+
+typedef struct {
+   Queue terms;
+} Dif;
+
+typedef struct {
+   Dif dif;
+   NPrimeImplicant nPrime;
+   bool used;
+} Row;
+
+typedef struct {
+   Queue rows;
+} Bucket;
+
+MAKE_QUEUE(bucket, Bucket)
+MAKE_QUEUE(row, Row)
+MAKE_QUEUE(nPrim, NPrimeImplicant)
 
 //*DEBUG*//
 void printTable(unsigned int variableCount, const Term* terms) {
@@ -201,6 +207,43 @@ void printBinaryBits(unsigned long long x, int bits) {
       putchar(bit ? '1' : '0');
    }
 }
+
+void printBuckets(Queue buckets) {
+   for (int i = 0; i < buckets.length; i++) {
+      printf("Bucket: \n");
+      Bucket b;
+      queue_bucket_get(&buckets, i, &b);
+      for (int j = 0; j < b.rows.length; j++) {
+         printf("Row: ");
+         Row r;
+         queue_row_get(&b.rows, j, &r);
+         for (int k = 0; k < r.nPrime.terms.length; ++k) {
+            unsigned int term = 0;
+            queue_u_get(&r.nPrime.terms, k, &term);
+            printf(" %u" , term);
+         }
+         printf("(");
+         for (int k = 0; k < r.dif.terms.length; ++k) {
+            unsigned int term = 0;
+            queue_u_get(&r.dif.terms, k, &term);
+            printf(" %u" , term);
+         }
+         printf(")");
+         printf("\n");
+      }
+      printf("\n");
+   }
+}
+
+void printPrimesNumbers(NPrimeImplicant prime) {
+   printf("Prime: ");
+   for (int i = 0; i < prime.terms.length; ++i) {
+      unsigned int term = 0;
+      queue_u_get(&prime.terms, i, &term);
+      printf("%u " , term);
+   }
+   printf("\n");
+}
 //*~DEBUG*//
 
 
@@ -208,7 +251,7 @@ void printBinaryBits(unsigned long long x, int bits) {
 //MinTerm    Min[var count](minterms)(nonmandatory)
 //MaxTerm    Max[var count](maxterms)(nonmandatory)
 //*PARSE INPUT*//
-static int countInts(const char* str) {
+int countInts(const char* str) {
    int count = 0;
    while (*str) {
       while (*str && !isdigit(*str) && *str != '-') str++;
@@ -220,7 +263,11 @@ static int countInts(const char* str) {
    return count;
 }
 
-static unsigned int* parse_int_list(const char* str, unsigned int* count) {
+bool isTwoPower(const unsigned int x) {
+   return (bool)(x != 0 && (x & (x - 1)) == 0);
+}
+
+unsigned int* parse_int_list(const char* str, unsigned int* count) {
    *count = countInts(str);
    unsigned int* out = malloc(sizeof(int) * *count);
    int i = 0;
@@ -314,6 +361,41 @@ unsigned int fillOnes(unsigned int mask, int id) {
 
    return out;
 }
+
+bool isSimilar(Queue x, Queue y) {
+   if (x.length != y.length) return false;
+   bool returnVal = true;
+   Queue alreadyUsed;
+   queue_init(&alreadyUsed);
+   for (int i = 0; i < x.length; ++i) {
+      unsigned int vx;
+      queue_u_get(&x, i, &vx);
+
+      bool found = false;
+      for (int j = 0; j < y.length; ++j) {
+         bool continueOuter = false;
+         for (int k = 0; k < alreadyUsed.length; ++k) {
+            unsigned int au;
+            queue_u_get(&alreadyUsed, k, &au);
+            if (au == j) continueOuter = true;
+         }
+         if (continueOuter) continue;
+         unsigned int vy;
+         queue_u_get(&y, j, &vy);
+         if (vx == vy) {
+            queue_u_push(&alreadyUsed, j);
+            found = true;
+            break;
+         }
+      }
+      if (!found) {
+         returnVal = false;
+         break;
+      }
+   }
+   queue_free(&alreadyUsed);
+   return returnVal;
+}
 //*~UTILS*///
 
 Term* parse_term(Expr expr) {
@@ -342,165 +424,127 @@ Term* parse_term(Expr expr) {
    return out;
 }
 
-//*OLD_IMPL*//
-PrimeImplicant* parse_prime(const Term* terms, unsigned int count, unsigned int* implicantCount) {
-   if (!terms) return NULL;
-   *implicantCount = 0;
-   for (unsigned int i = 0; i < (1 << count); i++) {
-      if (terms[i] == One) (*implicantCount)++;
-   }
-
-   PrimeImplicant* out = malloc(sizeof(PrimeImplicant) * (*implicantCount));
-   unsigned int j = 0;
-   for (unsigned int i = 0; i < (1 << count); i++) {
-      int term = terms[i];
-      if (term == One) {
-         out[j].taggedVariablesFlag = i;
-         out[j].flippedVariablesFlag = ~i;
-         j++;
-      }
-   }
-   return out;
-}
-
-PrimeImplicant growImplicant(PrimeImplicant implicant, const Term* terms, unsigned int count) {
-   //számjegyes minimalizálás
-   if (!terms) return implicant;
-   for (int i = 0; i < count; i++) {
-      unsigned int removeVar = 1 << i;
-
-      if (HasFlag(implicant.taggedVariablesFlag, removeVar) && HasFlag(implicant.flippedVariablesFlag, removeVar)) continue;
-      unsigned int holes = ~implicant.taggedVariablesFlag & ~implicant.flippedVariablesFlag & (1 << count)-1;
-      unsigned int emptyCount = countOnes(holes);
-
-      if (HasFlag(implicant.taggedVariablesFlag, removeVar)) {
-         unsigned int body = (implicant.taggedVariablesFlag | ~implicant.flippedVariablesFlag) & ~removeVar & ((1 << count)-1) & ~holes;
-
-         bool allowGrow = true;
-         for (int j = 0; j < 1 << emptyCount; ++j) {
-            unsigned int comb = fillOnes(holes, j);
-            unsigned int termID = body | comb;
-
-            if (terms[termID] == Zero) {
-               allowGrow = false;
-               break;
-            }
-         }
-
-         if (allowGrow) {
-            RemoveFlag(implicant.taggedVariablesFlag, removeVar);
-         }
-      } else if (HasFlag(implicant.flippedVariablesFlag, removeVar)) {
-         unsigned int body = (((implicant.taggedVariablesFlag) | ~implicant.flippedVariablesFlag) | removeVar) & ((1 << count)-1) & ~holes;
-
-         bool allowGrow = true;
-         for (int j = 0; j < 1 << emptyCount; ++j) {
-            unsigned int comb = fillOnes(holes, j);
-            unsigned int termID = body | comb;
-
-            if (terms[termID] == Zero) {
-               allowGrow = false;
-               break;
-            }
-         }
-
-         if (allowGrow) {
-            RemoveFlag(implicant.flippedVariablesFlag, removeVar);
-         }
-      }
-   }
-
-   return implicant;
-}
-
-void growAllImplicants(PrimeImplicant* implicants, unsigned int implicantCount, const Term* terms, unsigned int count) {
-   if (!implicants) return;
-   for (int i = 0; i < implicantCount; i++) {
-      implicants[i] = growImplicant(implicants[i], terms, count);
-   }
-}
-
-PrimeImplicant* removeDuplicates(const PrimeImplicant* implicants, unsigned int count, unsigned int* out_count) {
-   if (count <= 0) {
-      *out_count = 0;
-      return NULL;
-   }
-
-   PrimeImplicant* out = malloc(count * sizeof(PrimeImplicant));
-   if (!out || !implicants) {
-      *out_count = 0;
-      return NULL;
-   }
-
-   int unique = 0;
-
-   for (int i = 0; i < count; i++) {
-      int dup = 0;
-
-      for (int j = 0; j < unique; j++) {
-         if (implicants[i].taggedVariablesFlag == out[j].taggedVariablesFlag && implicants[i].flippedVariablesFlag == out[j].flippedVariablesFlag) {
-            dup = 1;
-            break;
-         }
-      }
-
-      if (!dup) {
-         out[unique++] = implicants[i];
-      }
-   }
-
-   out = realloc(out, unique * sizeof(PrimeImplicant));
-
-   *out_count = unique;
-
-   return out;
-}
-//*~OLD_IMPL*//
-
 //*NEW_IMPL*//
-PrimeTerm* getPrimeTerms(const Term* terms, unsigned int count, unsigned int* out_count) {
-   *out_count = 0;
-   for (int i = 0; i < (1 << count); i++) {
-      if (terms[i] == Zero) continue;
-      (*out_count)++;
+void fillBuckets(Queue* buckets, const Term* terms, unsigned int count) {
+   if (!terms) return;
+   int termsUsed = 0;
+   for (int i = 0; termsUsed <= (1 << count)-1; i++) {
+      Bucket bucket;
+      queue_init(&bucket.rows);
+
+      for (int j = 0; j < (1 << count); j++) {
+         if (countOnes(j) != i) continue;
+         termsUsed++;
+         if (terms[j] == Zero) continue;
+         Row row;
+         row.used = false;
+         queue_init(&row.dif.terms);
+         queue_init(&row.nPrime.terms);
+         queue_u_push(&row.nPrime.terms, j);
+         queue_row_push(&bucket.rows, row);
+      }
+
+      queue_bucket_push(buckets, bucket);
    }
-
-   PrimeTerm* out = malloc((*out_count) * sizeof(PrimeTerm));
-   if (!out) return NULL;
-
-   int j = 0;
-   for (unsigned int i = 0; i < (1 << count); i++) {
-      if (terms[i] == Zero) continue;
-      out[j].place = i;
-      out[j].termType = terms[i];
-      out[j++].binaryWeight = countOnes(i);
-   }
-
-   return out;
 }
 
-void orderPrimeTerms(PrimeTerm* primeTerms, unsigned int count) {
-   for (int i = 0; i < count; i++) {
-      for (int j = i; j < count; j++) {
-         if (primeTerms[i].binaryWeight <= primeTerms[j].binaryWeight) continue;
-         PrimeTerm temp = primeTerms[i];
-         primeTerms[i] = primeTerms[j];
-         primeTerms[j] = temp;
+void collectUnUsed(const Queue input, Queue* primes) {
+   for (int i = 0; i < input.length; i++) {
+      Bucket x;
+      queue_bucket_get(&input, i, &x);
+
+      for (int j = 0; j < x.rows.length; j++) {
+         Row row;
+         queue_row_get(&x.rows, j, &row);
+         if (!row.used) {
+            NPrimeImplicant prime;
+            queue_init(&prime.terms);
+            for (int k = 0; k < row.nPrime.terms.length; ++k) {
+               unsigned int term = 0;
+               queue_u_get(&row.nPrime.terms, k, &term);
+               queue_u_push(&prime.terms, term);
+            }
+            queue_nPrim_push(primes, prime);
+         }
       }
    }
+}
+
+void mergePrimes(Queue input, Queue* output, const Term* terms, unsigned int count, Queue* primes) {
+   for (int i = 0; i < input.length-1; i++) {
+      Bucket x;
+      Bucket y;
+      queue_bucket_get(&input, i, &x);
+      queue_bucket_get(&input, i+1, &y);
+
+      Bucket out;
+      queue_init(&out.rows);
+
+      for (int j = 0; j < x.rows.length; j++) {
+         Row* rowX = queue_row_get_ptr(&x.rows, j);
+
+
+         for (int k = 0; k < y.rows.length; k++) {
+            Row* rowY = queue_row_get_ptr(&y.rows, k);
+            if (rowX->dif.terms.length > 0) {
+               if (!isSimilar(rowX->dif.terms, rowY->dif.terms)) continue;
+            }
+
+            unsigned int tX = 0;
+            unsigned int tY = 0;
+            queue_u_get(&rowX->nPrime.terms, 0, &tX);
+            queue_u_get(&rowY->nPrime.terms, 0, &tY);
+
+            if (tX >= tY) continue;
+            unsigned int dif = tY-tX;
+            if (!isTwoPower(dif)) continue;
+
+            Row rowO;
+            rowO.used = false;
+            queue_init(&rowO.dif.terms);
+            queue_init(&rowO.nPrime.terms);
+
+            rowX->used = true;
+            rowY->used = true;
+
+            for (int l = 0; l < rowX->nPrime.terms.length; ++l) {
+               unsigned int cTerm;
+               queue_u_get(&rowX->nPrime.terms, l, &cTerm);
+               queue_u_push(&rowO.nPrime.terms, cTerm);
+            }
+            for (int l = 0; l < rowY->nPrime.terms.length; ++l) {
+               unsigned int cTerm;
+               queue_u_get(&rowY->nPrime.terms, l, &cTerm);
+               queue_u_push(&rowO.nPrime.terms, cTerm);
+            }
+            for (int l = 0; l < rowX->dif.terms.length; ++l) {
+               unsigned int cTerm;
+               queue_u_get(&rowX->dif.terms, l, &cTerm);
+               queue_u_push(&rowO.dif.terms, cTerm);
+            }
+            queue_u_push(&rowO.dif.terms, dif);
+
+            bool found = false;
+            for (int l = 0; l < out.rows.length; ++l) {
+               Row check;
+               queue_row_get(&out.rows, l, &check);
+               if (isSimilar(check.nPrime.terms, rowO.nPrime.terms) && isSimilar(check.dif.terms, rowO.dif.terms)) {
+                  found = true;
+                  break;
+               }
+            }
+            if (!found) queue_row_push(&out.rows, rowO);
+         }
+      }
+      queue_bucket_push(output, out);
+   }
+
+   collectUnUsed(input, primes);
 }
 //*~NEW_IMPL*//
-typedef struct TermNode {
-   struct TermNode* next;
-   unsigned int term;
-} TermNode;
-typedef struct BucketNode {
-   struct Bucket* next;
-   TermNode* terms;
-} Bucket;
 
 int main(void) {
-   const char* input = "Min[4](0,1,3,2,4,5,7)(13)";
+   const char* input = "Min[4](8,6,10,12,7,13,14)()";
    Expr expr;
 
    if (parse_expr(input, &expr)) {
@@ -511,21 +555,44 @@ int main(void) {
    printf("\n");
    printTable(expr.var_count, terms);
 
-   unsigned int primeTermCount = 0;
-   PrimeTerm* primeTerms = getPrimeTerms(terms, expr.var_count, &primeTermCount);
-   if (!primeTerms) {
-      free(terms);
-      return 0;
-   }
+   Queue primes;
+   queue_init(&primes);
 
-   orderPrimeTerms(primeTerms, primeTermCount);
+   Queue prev;
+   queue_init(&prev);
+   fillBuckets(&prev, terms, expr.var_count);
+   printf("before:\n");
+   printBuckets(prev);
+   printf("\n");
 
-   for (int i = 0; i < primeTermCount; i++) {
-      printf("PTerm: %c %u %u \n", primeTerms[i].termType, primeTerms[i].place, primeTerms[i].binaryWeight);
+   Queue next;
+   queue_init(&next);
+   mergePrimes(prev, &next, terms, expr.var_count, &primes);
+   printf("after: \n");
+   printBuckets(next);
+   printf("\n");
+
+   prev = next;
+   queue_init(&next);
+   mergePrimes(prev, &next, terms, expr.var_count, &primes);
+   printf("after after: \n");
+   printBuckets(next);
+   printf("\n");
+
+   prev = next;
+   queue_init(&next);
+   mergePrimes(prev, &next, terms, expr.var_count, &primes);
+   printf("after after: \n");
+   printBuckets(next);
+   printf("\n");
+
+   for (int i = 0; i < primes.length; ++i) {
+      NPrimeImplicant prime;
+      queue_nPrim_get(&primes, i, &prime);
+      printPrimesNumbers(prime);
    }
 
    free(terms);
-   free(primeTerms);
 
    return 0;
 }
