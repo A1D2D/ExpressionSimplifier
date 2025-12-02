@@ -348,20 +348,6 @@ unsigned int countOnes(unsigned int x) {
    return count;
 }
 
-unsigned int fillOnes(unsigned int mask, int id) {
-   unsigned int out = 0;
-
-   for (int bit = 0; bit < 32 && mask; bit++) {
-      unsigned int lowest = mask & -mask;
-
-      if (id & (1u << bit)) out |= lowest;
-
-      mask &= mask - 1;
-   }
-
-   return out;
-}
-
 bool isSimilar(Queue x, Queue y) {
    if (x.length != y.length) return false;
    bool returnVal = true;
@@ -395,6 +381,10 @@ bool isSimilar(Queue x, Queue y) {
    }
    queue_free(&alreadyUsed);
    return returnVal;
+}
+
+PrimeImplicant convertToNormal(NPrimeImplicant prime) {
+
 }
 //*~UTILS*///
 
@@ -541,6 +531,51 @@ void mergePrimes(Queue input, Queue* output, const Term* terms, unsigned int cou
 
    collectUnUsed(input, primes);
 }
+
+bool isEmpty(Queue input) {
+   bool empty = true;
+   for (int i = 0; i < input.length; i++) {
+      Bucket b;
+      queue_bucket_get(&input, i, &b);
+      if (b.rows.length > 0) empty = false;
+   }
+   return empty;
+}
+
+void freeBuckets(Queue* buckets) {
+   for (int i = 0; i < buckets->length; i++) {
+      Bucket b;
+      queue_bucket_get(buckets, i, &b);
+      for (int j = 0; j < b.rows.length; j++) {
+         Row r;
+         queue_row_get(&b.rows, j, &r);
+         queue_free(&r.nPrime.terms);
+         queue_free(&r.dif.terms);
+      }
+   }
+   queue_free(buckets);
+}
+
+void quineMcCluskey(const Term* terms, unsigned int count, Queue* primes) {
+   Queue prev;
+   queue_init(&prev);
+   fillBuckets(&prev, terms, count);
+   Queue next;
+
+   while (!isEmpty(prev)) {
+      queue_init(&next);
+      mergePrimes(prev, &next, terms, count, primes);
+      freeBuckets(&prev);
+      prev = next;
+   }
+   freeBuckets(&prev);
+}
+
+void selectRequired(const Term* terms, unsigned int count, Queue* primes, bool hazardFree) {
+   if (!terms) return;
+
+
+}
 //*~NEW_IMPL*//
 
 int main(void) {
@@ -555,36 +590,11 @@ int main(void) {
    printf("\n");
    printTable(expr.var_count, terms);
 
+
+   printf("\n");
    Queue primes;
    queue_init(&primes);
-
-   Queue prev;
-   queue_init(&prev);
-   fillBuckets(&prev, terms, expr.var_count);
-   printf("before:\n");
-   printBuckets(prev);
-   printf("\n");
-
-   Queue next;
-   queue_init(&next);
-   mergePrimes(prev, &next, terms, expr.var_count, &primes);
-   printf("after: \n");
-   printBuckets(next);
-   printf("\n");
-
-   prev = next;
-   queue_init(&next);
-   mergePrimes(prev, &next, terms, expr.var_count, &primes);
-   printf("after after: \n");
-   printBuckets(next);
-   printf("\n");
-
-   prev = next;
-   queue_init(&next);
-   mergePrimes(prev, &next, terms, expr.var_count, &primes);
-   printf("after after: \n");
-   printBuckets(next);
-   printf("\n");
+   quineMcCluskey(terms, expr.var_count, &primes);
 
    for (int i = 0; i < primes.length; ++i) {
       NPrimeImplicant prime;
