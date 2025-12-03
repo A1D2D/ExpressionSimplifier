@@ -73,7 +73,6 @@ void queue_free(Queue* q) {
 
    while (node) {
       QueueNode* next = node->next;
-
       free(node->data);
       free(node);
 

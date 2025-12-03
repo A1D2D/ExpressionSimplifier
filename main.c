@@ -4,7 +4,11 @@
 #include <ctype.h>
 
 #include "Helpers.h"
+#include "debugmalloc.h"
+
 #include "Queues.h"
+
+
 
 typedef enum {
    Unset = 0,
@@ -384,7 +388,24 @@ bool isSimilar(Queue x, Queue y) {
 }
 
 PrimeImplicant convertToNormal(NPrimeImplicant prime) {
+   PrimeImplicant out;
+   out.flippedVariablesFlag = 0;
+   out.taggedVariablesFlag = 0;
 
+   if (prime.terms.length == 0) return out;
+   unsigned int diff = 0;
+   unsigned int first = 0;
+   queue_u_get(&prime.terms, 0, &first);
+   for (int i = 1; i < prime.terms.length; ++i) {
+      unsigned int item = 0;
+      queue_u_get(&prime.terms, i, &item);
+      diff |= first ^ item;
+   }
+   diff = ~diff;
+
+   out.taggedVariablesFlag = diff & first;
+   out.flippedVariablesFlag = diff & (~first);
+   return out;
 }
 //*~UTILS*///
 
@@ -473,7 +494,6 @@ void mergePrimes(Queue input, Queue* output, const Term* terms, unsigned int cou
       for (int j = 0; j < x.rows.length; j++) {
          Row* rowX = queue_row_get_ptr(&x.rows, j);
 
-
          for (int k = 0; k < y.rows.length; k++) {
             Row* rowY = queue_row_get_ptr(&y.rows, k);
             if (rowX->dif.terms.length > 0) {
@@ -523,7 +543,12 @@ void mergePrimes(Queue input, Queue* output, const Term* terms, unsigned int cou
                   break;
                }
             }
-            if (!found) queue_row_push(&out.rows, rowO);
+            if (!found) {
+               queue_row_push(&out.rows, rowO);
+            } else {
+               queue_free(&rowO.nPrime.terms);
+               queue_free(&rowO.dif.terms);
+            }
          }
       }
       queue_bucket_push(output, out);
@@ -552,23 +577,38 @@ void freeBuckets(Queue* buckets) {
          queue_free(&r.nPrime.terms);
          queue_free(&r.dif.terms);
       }
+      queue_free(&b.rows);
    }
    queue_free(buckets);
+}
+
+void freePrimeNumbers(Queue* primes) {
+   for (int i = 0; i < primes->length; i++) {
+      NPrimeImplicant prime;
+      queue_nPrim_get(primes, i, &prime);
+      queue_free(&prime.terms);
+   }
+   queue_free(primes);
+}
+
+void freeExpr(Expr* expr) {
+   free(expr->terms);
+   free(expr->opt_terms);
 }
 
 void quineMcCluskey(const Term* terms, unsigned int count, Queue* primes) {
    Queue prev;
    queue_init(&prev);
    fillBuckets(&prev, terms, count);
-   Queue next;
 
+   Queue next;
    while (!isEmpty(prev)) {
       queue_init(&next);
       mergePrimes(prev, &next, terms, count, primes);
       freeBuckets(&prev);
       prev = next;
    }
-   freeBuckets(&prev);
+   freeBuckets(&next);
 }
 
 void selectRequired(const Term* terms, unsigned int count, Queue* primes, bool hazardFree) {
@@ -585,6 +625,7 @@ int main(void) {
    if (parse_expr(input, &expr)) {
    }
    Term* terms = parse_term(expr);
+   freeExpr(&expr);
 
    printEmptyTable(expr.var_count);
    printf("\n");
@@ -594,15 +635,20 @@ int main(void) {
    printf("\n");
    Queue primes;
    queue_init(&primes);
+
    quineMcCluskey(terms, expr.var_count, &primes);
 
    for (int i = 0; i < primes.length; ++i) {
       NPrimeImplicant prime;
       queue_nPrim_get(&primes, i, &prime);
       printPrimesNumbers(prime);
+      // convertToNormal(prime);
    }
 
+   freePrimeNumbers(&primes);
+
    free(terms);
+
 
    return 0;
 }
