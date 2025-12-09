@@ -10,6 +10,7 @@
 
 #define BASIC_DEBUG 1
 
+//*DATA_STRUCTURES*//
 typedef enum {
    Unset = 0,
    One = '1',
@@ -61,6 +62,7 @@ typedef struct {
    Queue terms;
    bool covered;
 } TermGroup;
+//*~DATA_STRUCTURES*//
 
 MAKE_QUEUE(bucket, Bucket)
 MAKE_QUEUE(row, Row)
@@ -68,7 +70,8 @@ MAKE_QUEUE(nPrim, NPrimeImplicant)
 MAKE_QUEUE(tg, TermGroup)
 
 //*DEBUG*//
-void printTable(unsigned int variableCount, const Term* terms) {
+void printTable(const unsigned int variableCount, const Term* terms) {
+   if (!BASIC_DEBUG) return;
    if (!terms) return;
    if (variableCount > 4) return;
    const char v[5] = {'A', 'B', 'C', 'D', 'F'};
@@ -131,7 +134,8 @@ void printTable(unsigned int variableCount, const Term* terms) {
    }
 }
 
-void printEmptyTable(unsigned int variableCount) {
+void printEmptyTable(const unsigned int variableCount) {
+   if (!BASIC_DEBUG) return;
    if (variableCount > 4) return;
    const char v[5] = {'A', 'B', 'C', 'D', 'F'};
    char t[32] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'V', 'W'};
@@ -177,7 +181,8 @@ void printEmptyTable(unsigned int variableCount) {
    }
 }
 
-void printPrimeImplicant(PrimeImplicant primeImplicant, unsigned int count, ExprTableType type) {
+void printPrimeImplicant(PrimeImplicant primeImplicant, const unsigned int count, const ExprTableType type) {
+   if (!BASIC_DEBUG) return;
    const char* primeNames[64] = {
       "a","b","c","d","e","f","g",
       "h","i","j","k","l","m","n",
@@ -208,20 +213,28 @@ void printPrimeImplicant(PrimeImplicant primeImplicant, unsigned int count, Expr
          if (j < count-1 && type == Maxterm) printf(" | ");
       }
    }
-   if (primeImplicant.taggedVariablesFlag == 0) printf("1");
-   if (primeImplicant.flippedVariablesFlag == 0) printf("0");
+   if ((primeImplicant.taggedVariablesFlag & (1 << count -1)) == 0
+      && (primeImplicant.flippedVariablesFlag & (1 << count -1)) == 0) {
+      if (type == Maxterm) {
+         printf("0");
+      } else {
+         printf("1");
+      }
+   }
    printf("\n");
 }
 
-void printFullBinary(unsigned long long x, int bytes) {
-   int bits = bytes * 8;
+void printFullBinary(const unsigned long long x, const int bytes) {
+   if (!BASIC_DEBUG) return;
+   const int bits = bytes * 8;
    for (int i = 0; i < bits; ++i) {
-      unsigned bit = (x >> i) & 1ULL;
+      const unsigned bit = (x >> i) & 1ULL;
       putchar(bit ? '1' : '0');
    }
 }
 
-void printBinaryBits(unsigned long long x, int bits) {
+void printBinaryBits(const unsigned long long x,const int bits) {
+   if (!BASIC_DEBUG) return;
    for (int i = 0; i < bits; ++i) {
       unsigned bit = (x >> i) & 1ULL;
       putchar(bit ? '1' : '0');
@@ -229,6 +242,7 @@ void printBinaryBits(unsigned long long x, int bits) {
 }
 
 void printBuckets(Queue buckets) {
+   if (!BASIC_DEBUG) return;
    for (int i = 0; i < buckets.length; i++) {
       printf("Bucket: \n");
       Bucket b;
@@ -256,11 +270,35 @@ void printBuckets(Queue buckets) {
 }
 
 void printPrimesNumbers(NPrimeImplicant prime) {
+   if (!BASIC_DEBUG) return;
    printf("Prime: ");
    for (int i = 0; i < prime.terms.length; ++i) {
       unsigned int term = 0;
       queue_u_get(&prime.terms, i, &term);
       printf("%u " , term);
+   }
+   printf("\n");
+}
+
+void printCoverTable(const Queue table, const Queue usedPIDs) {
+   if (!BASIC_DEBUG) return;
+   for (int i = 0; i < table.length; ++i) {
+      TermGroup tg;
+      queue_tg_get(&table, i, &tg);
+      printf("Group: %d %s: ", i, tg.covered ? "covered" : "not covered");
+      for (int j = 0; j < tg.terms.length; ++j) {
+         unsigned int term;
+         queue_u_get(&tg.terms, j, &term);
+         printf("%d ", term);
+      }
+      printf("\n");
+   }
+
+   printf("\n");
+   for (int i = 0; i < usedPIDs.length; ++i) {
+      unsigned int use;
+      queue_u_get(&usedPIDs, i, &use);
+      printf("%d ", use);
    }
    printf("\n");
 }
@@ -794,25 +832,7 @@ void selectRequired(const Term* terms, unsigned int count, Queue* primes, bool h
    }
 
    //DBG
-   for (int i = 0; i < table.length; ++i) {
-      TermGroup tg;
-      queue_tg_get(&table, i, &tg);
-      printf("Group: %d %s: ", i, tg.covered ? "covered" : "not covered");
-      for (int j = 0; j < tg.terms.length; ++j) {
-         unsigned int term;
-         queue_u_get(&tg.terms, j, &term);
-         printf("%d ", term);
-      }
-      printf("\n");
-   }
-
-   printf("\n");
-   for (int i = 0; i < usedPIDs.length; ++i) {
-      unsigned int use;
-      queue_u_get(&usedPIDs, i, &use);
-      printf("%d ", use);
-   }
-   printf("\n");
+   printCoverTable(table, usedPIDs);
 
    Queue primesClone;
    queue_init(&primesClone);
@@ -853,7 +873,7 @@ void selectRequired(const Term* terms, unsigned int count, Queue* primes, bool h
 //*~IMPL*//
 
 int main(void) {
-   const char* input = "Min[4]H(0,1,2,3)()";
+   const char* input = "Max[4](0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)";
    Expr expr;
 
    if (!parse_expr(input, &expr)) return 1;
@@ -861,12 +881,12 @@ int main(void) {
    freeExpr(&expr);
 
    printEmptyTable(expr.var_count);
-   printf("\n");
+   if (BASIC_DEBUG) printf("\n");
    printTable(expr.var_count, terms);
 
    if (expr.type == Maxterm) flipTerms(terms, expr.var_count);
 
-   printf("\n");
+   if (BASIC_DEBUG) printf("\n");
    Queue primes;
    queue_init(&primes);
 
@@ -878,9 +898,9 @@ int main(void) {
       printPrimesNumbers(prime);
       PrimeImplicant p = convertToNormal(prime);
       printPrimeImplicant(p, expr.var_count, expr.type);
-      printf("\n");
+      if (BASIC_DEBUG) printf("\n");
    }
-   printf("\n");
+   if (BASIC_DEBUG) printf("\n");
 
    selectRequired(terms, expr.var_count, &primes, expr.hazardFree);
    for (int i = 0; i < primes.length; ++i) {
@@ -889,9 +909,9 @@ int main(void) {
       printPrimesNumbers(prime);
       PrimeImplicant p = convertToNormal(prime);
       printPrimeImplicant(p, expr.var_count, expr.type);
-      printf("\n");
+      if (BASIC_DEBUG) printf("\n");
    }
-   printf("\n");
+   if (BASIC_DEBUG) printf("\n");
 
    freePrimeNumbers(&primes);
    free(terms);
