@@ -8,7 +8,7 @@
 
 #include "Queues.h"
 
-
+#define BASIC_DEBUG 1
 
 typedef enum {
    Unset = 0,
@@ -31,6 +31,7 @@ typedef struct {
    unsigned int terms_count;
    unsigned int* opt_terms;
    unsigned int opt_terms_count;
+   bool hazardFree;
 } Expr;
 
 typedef struct {
@@ -56,15 +57,21 @@ typedef struct {
    Queue rows;
 } Bucket;
 
+typedef struct {
+   Queue terms;
+   bool covered;
+} TermGroup;
+
 MAKE_QUEUE(bucket, Bucket)
 MAKE_QUEUE(row, Row)
 MAKE_QUEUE(nPrim, NPrimeImplicant)
+MAKE_QUEUE(tg, TermGroup)
 
 //*DEBUG*//
 void printTable(unsigned int variableCount, const Term* terms) {
    if (!terms) return;
+   if (variableCount > 4) return;
    const char v[5] = {'A', 'B', 'C', 'D', 'F'};
-   // char t[32] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'V', 'W'};
    char t[32] = {0};
    for (int i = 0; i < 1<<variableCount; i++) {
       switch (terms[i]) {
@@ -125,6 +132,7 @@ void printTable(unsigned int variableCount, const Term* terms) {
 }
 
 void printEmptyTable(unsigned int variableCount) {
+   if (variableCount > 4) return;
    const char v[5] = {'A', 'B', 'C', 'D', 'F'};
    char t[32] = {'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'V', 'W'};
 
@@ -169,7 +177,7 @@ void printEmptyTable(unsigned int variableCount) {
    }
 }
 
-void printPrimeImplicant(PrimeImplicant primeImplicant,unsigned int count) {
+void printPrimeImplicant(PrimeImplicant primeImplicant, unsigned int count, ExprTableType type) {
    const char* primeNames[64] = {
       "a","b","c","d","e","f","g",
       "h","i","j","k","l","m","n",
@@ -181,19 +189,27 @@ void printPrimeImplicant(PrimeImplicant primeImplicant,unsigned int count) {
       "V","W","X","Y","Z",
       "A1","B1","C1","D1","E1","F1","G1","H1","I1","J1","K1","L1"
    };
-   printf("id?: %llu| ", primeImplicant.taggedVariablesFlag);
+   if (type == Maxterm) {
+      unsigned long long temp = primeImplicant.flippedVariablesFlag;
+      primeImplicant.flippedVariablesFlag = primeImplicant.taggedVariablesFlag;
+      primeImplicant.taggedVariablesFlag = temp;
+   }
    for (int j = 0; j < count; ++j) {
       if (HasFlag(primeImplicant.taggedVariablesFlag, 1 << j)) {
          printf("%s", primeNames[count - j - 1]);
-         if (j < count-1) printf("*");
+         if (j < count-1 && !type == Maxterm) printf(" & ");
+         if (j < count-1 && type == Maxterm) printf(" | ");
       }
    }
    for (int j = 0; j < count; ++j) {
       if (HasFlag(primeImplicant.flippedVariablesFlag, 1 << j)) {
-         printf("(-%s)", primeNames[count - j - 1]);
-         if (j < count-1) printf("*");
+         printf("(!%s)", primeNames[count - j - 1]);
+         if (j < count-1 && !type == Maxterm) printf(" & ");
+         if (j < count-1 && type == Maxterm) printf(" | ");
       }
    }
+   if (primeImplicant.taggedVariablesFlag == 0) printf("1");
+   if (primeImplicant.flippedVariablesFlag == 0) printf("0");
    printf("\n");
 }
 
@@ -312,6 +328,13 @@ int parse_expr(const char* s, Expr* out) {
    const char* p2 = strchr(s, ']');
    if (!p1 || !p2) return 0;
    out->var_count = atoi(p1 + 1);
+   if (out->var_count > 15) return 0;
+   const char* p = p2 + 1;
+   if (*p == 'H') {
+      out->hazardFree = true;
+   } else {
+      out->hazardFree = false;
+   }
 
    const char* m1 = strchr(p2, '(');
    if (!m1) return 0;
@@ -326,9 +349,17 @@ int parse_expr(const char* s, Expr* out) {
    free(temp);
 
    const char* o1 = strchr(m2 + 1, '(');
-   if (!o1) return 0;
+   if (!o1) {
+      out->opt_terms = NULL;
+      out->opt_terms_count = 0;
+      return 1;
+   }
    const char* o2 = strchr(o1 + 1, ')');
-   if (!o2) return 0;
+   if (!o2) {
+      return 0;
+      free(out->terms);
+      free(out->opt_terms);
+   }
 
    out->opt_terms_count = 0;
    len = o2 - (o1 + 1);
@@ -352,17 +383,16 @@ unsigned int countOnes(unsigned int x) {
    return count;
 }
 
-bool isSimilar(Queue x, Queue y) {
-   if (x.length != y.length) return false;
+bool contains(Queue a, Queue b) {
    bool returnVal = true;
    Queue alreadyUsed;
    queue_init(&alreadyUsed);
-   for (int i = 0; i < x.length; ++i) {
+   for (int i = 0; i < b.length; ++i) {
       unsigned int vx;
-      queue_u_get(&x, i, &vx);
+      queue_u_get(&b, i, &vx);
 
       bool found = false;
-      for (int j = 0; j < y.length; ++j) {
+      for (int j = 0; j < a.length; ++j) {
          bool continueOuter = false;
          for (int k = 0; k < alreadyUsed.length; ++k) {
             unsigned int au;
@@ -371,7 +401,7 @@ bool isSimilar(Queue x, Queue y) {
          }
          if (continueOuter) continue;
          unsigned int vy;
-         queue_u_get(&y, j, &vy);
+         queue_u_get(&a, j, &vy);
          if (vx == vy) {
             queue_u_push(&alreadyUsed, j);
             found = true;
@@ -385,6 +415,11 @@ bool isSimilar(Queue x, Queue y) {
    }
    queue_free(&alreadyUsed);
    return returnVal;
+}
+
+bool isSimilar(Queue x, Queue y) {
+   if (x.length != y.length) return false;
+   return contains(x, y);
 }
 
 PrimeImplicant convertToNormal(NPrimeImplicant prime) {
@@ -409,6 +444,7 @@ PrimeImplicant convertToNormal(NPrimeImplicant prime) {
 }
 //*~UTILS*///
 
+//*IMPL*//
 Term* parse_term(Expr expr) {
    unsigned int cc = 1 << expr.var_count;
    Term* out = malloc(sizeof(Term) * cc);
@@ -429,13 +465,24 @@ Term* parse_term(Expr expr) {
          out[cc-expr.opt_terms[i]-1] = Opt;
       }
    }
-
-
-
    return out;
 }
 
-//*NEW_IMPL*//
+void flipTerms(Term* terms, const unsigned int count) {
+   for (int i = 0; i < 1 << count; i++) {
+      switch (terms[i]) {
+         case Zero:
+            terms[i] = One;
+            break;
+         case One:
+            terms[i] = Zero;
+            break;
+         default:
+            terms[i] = Opt;
+      }
+   }
+}
+
 void fillBuckets(Queue* buckets, const Term* terms, unsigned int count) {
    if (!terms) return;
    int termsUsed = 0;
@@ -601,29 +648,215 @@ void quineMcCluskey(const Term* terms, unsigned int count, Queue* primes) {
    queue_init(&prev);
    fillBuckets(&prev, terms, count);
 
-   Queue next;
    while (!isEmpty(prev)) {
+      Queue next;
       queue_init(&next);
       mergePrimes(prev, &next, terms, count, primes);
       freeBuckets(&prev);
       prev = next;
    }
-   freeBuckets(&next);
+   freeBuckets(&prev);
 }
 
 void selectRequired(const Term* terms, unsigned int count, Queue* primes, bool hazardFree) {
-   if (!terms) return;
+   if (!terms || !primes) return;
+   Queue usedPIDs;
+   queue_init(&usedPIDs);
+   Queue table;
+   queue_init(&table);
 
 
+   //fill selection table
+   if (hazardFree) {
+      //iterate through all terms
+      for (int i = 0; i < 1<<count; i++) {
+         if (terms[i] != One) continue;
+         bool found = false;
+         for (int j = 0; j < count; j++) {
+            //find all its neighbor terms
+            unsigned int neighbour = (1 << j) ^ i;
+            if (terms[neighbour] != One) continue;
+            found = true;
+            bool skip = false;
+            Queue check;
+            queue_init(&check);
+            queue_u_push(&check, neighbour);
+            queue_u_push(&check, i);
+            //check if its already added to the list
+            for (int k = 0; k < table.length; k++) {
+               TermGroup tg;
+               queue_tg_get(&table, k, &tg);
+               if (contains(tg.terms, check)) {
+                  skip = true;
+                  break;
+               }
+            }
+            queue_free(&check);
+            if (skip) continue;
+            //add the pair neighbor pair to the table
+            TermGroup tg;
+            tg.covered = false;
+            queue_init(&tg.terms);
+            queue_u_push(&tg.terms, i);
+            queue_u_push(&tg.terms, neighbour);
+            queue_tg_push(&table, tg);
+         }
+         if (!found) {
+            //if nothing got added, add the term only
+            TermGroup tg;
+            tg.covered = false;
+            queue_init(&tg.terms);
+            queue_u_push(&tg.terms, i);
+            queue_tg_push(&table, tg);
+         }
+      }
+   } else {
+      //push all One terms to the list
+      for (int i = 0; i < 1<<count; i++) {
+         if (terms[i] != One) continue;
+         TermGroup tg;
+         tg.covered = false;
+         queue_init(&tg.terms);
+         queue_u_push(&tg.terms, i);
+         queue_tg_push(&table, tg);
+      }
+   }
+
+   //Mandatory pass
+   for (int i = 0; i < table.length; i++) {
+      TermGroup tg;
+      queue_tg_get(&table, i, &tg);
+      if (tg.covered) continue;
+      unsigned int firstPrimeIndex = 0;
+
+      int found = 0;
+      for (int j = 0; j < primes->length; j++) {
+         NPrimeImplicant prime;
+         queue_nPrim_get(primes, j, &prime);
+         if (contains(prime.terms, tg.terms)) {
+            firstPrimeIndex = j;
+            found++;
+         }
+         if (found > 1) break;
+      }
+      if (found > 1) continue;
+
+      queue_u_push(&usedPIDs, firstPrimeIndex);
+      NPrimeImplicant prime;
+      queue_nPrim_get(primes, firstPrimeIndex, &prime);
+
+      for (int j = 0; j < table.length; j++) {
+         TermGroup* checkPtr = queue_tg_get_ptr(&table, j);
+         if (contains(prime.terms, checkPtr->terms)) checkPtr->covered = true;
+      }
+   }
+
+   //Cover Pass
+   while (usedPIDs.length < primes->length) {
+      unsigned int bestPrimeIndex = 0;
+      unsigned int bestValue = 0;
+      for (int i = 0; i < primes->length; ++i) {
+         bool used = false;
+         for (int j = 0; j < usedPIDs.length; ++j) {
+            unsigned int pID;
+            queue_u_get(&usedPIDs, j, &pID);
+            if (pID == i) {
+               used = true;
+               break;
+            }
+         }
+         if (used) continue;
+         NPrimeImplicant prime;
+         queue_nPrim_get(primes, i, &prime);
+
+         int value = 0;
+         for (int j = 0; j < table.length; j++) {
+            TermGroup check;
+            queue_tg_get(&table, j, &check);
+            if (check.covered) continue;
+            if (contains(prime.terms, check.terms)) value++;
+         }
+         if (value > bestValue) {
+            bestValue = value;
+            bestPrimeIndex = i;
+         }
+      }
+      if (bestValue == 0) break;
+      queue_u_push(&usedPIDs, bestPrimeIndex);
+
+      NPrimeImplicant prime;
+      queue_nPrim_get(primes, bestPrimeIndex, &prime);
+
+      for (int j = 0; j < table.length; j++) {
+         TermGroup* checkPtr = queue_tg_get_ptr(&table, j);
+         if (contains(prime.terms, checkPtr->terms)) checkPtr->covered = true;
+      }
+   }
+
+   //DBG
+   for (int i = 0; i < table.length; ++i) {
+      TermGroup tg;
+      queue_tg_get(&table, i, &tg);
+      printf("Group: %d %s: ", i, tg.covered ? "covered" : "not covered");
+      for (int j = 0; j < tg.terms.length; ++j) {
+         unsigned int term;
+         queue_u_get(&tg.terms, j, &term);
+         printf("%d ", term);
+      }
+      printf("\n");
+   }
+
+   printf("\n");
+   for (int i = 0; i < usedPIDs.length; ++i) {
+      unsigned int use;
+      queue_u_get(&usedPIDs, i, &use);
+      printf("%d ", use);
+   }
+   printf("\n");
+
+   Queue primesClone;
+   queue_init(&primesClone);
+   for (int i = 0; i < primes->length; ++i) {
+      bool used = false;
+      for (int j = 0; j < usedPIDs.length; ++j) {
+         unsigned int pID;
+         queue_u_get(&usedPIDs, j, &pID);
+         if (pID == i) {
+            used = true;
+            break;
+         }
+      }
+      if (!used) continue;
+      NPrimeImplicant prime;
+      queue_nPrim_get(primes, i, &prime);
+      NPrimeImplicant primeClone;
+      queue_init(&primeClone.terms);
+      for (int j = 0; j < prime.terms.length; j++) {
+         unsigned int term;
+         queue_u_get(&prime.terms, j, &term);
+         queue_u_push(&primeClone.terms, term);
+      }
+      queue_nPrim_push(&primesClone, primeClone);
+   }
+   freePrimeNumbers(primes);
+   *primes = primesClone;
+
+   //free containers
+   for (int i = 0; i < table.length; ++i) {
+      TermGroup tg;
+      queue_tg_get(&table, i, &tg);
+      queue_free(&tg.terms);
+   }
+   queue_free(&table);
+   queue_free(&usedPIDs);
 }
-//*~NEW_IMPL*//
+//*~IMPL*//
 
 int main(void) {
-   const char* input = "Min[4](8,6,10,12,7,13,14)()";
+   const char* input = "Min[4]H(0,1,2,3)()";
    Expr expr;
 
-   if (parse_expr(input, &expr)) {
-   }
+   if (!parse_expr(input, &expr)) return 1;
    Term* terms = parse_term(expr);
    freeExpr(&expr);
 
@@ -631,6 +864,7 @@ int main(void) {
    printf("\n");
    printTable(expr.var_count, terms);
 
+   if (expr.type == Maxterm) flipTerms(terms, expr.var_count);
 
    printf("\n");
    Queue primes;
@@ -642,13 +876,24 @@ int main(void) {
       NPrimeImplicant prime;
       queue_nPrim_get(&primes, i, &prime);
       printPrimesNumbers(prime);
-      // convertToNormal(prime);
+      PrimeImplicant p = convertToNormal(prime);
+      printPrimeImplicant(p, expr.var_count, expr.type);
+      printf("\n");
    }
+   printf("\n");
+
+   selectRequired(terms, expr.var_count, &primes, expr.hazardFree);
+   for (int i = 0; i < primes.length; ++i) {
+      NPrimeImplicant prime;
+      queue_nPrim_get(&primes, i, &prime);
+      printPrimesNumbers(prime);
+      PrimeImplicant p = convertToNormal(prime);
+      printPrimeImplicant(p, expr.var_count, expr.type);
+      printf("\n");
+   }
+   printf("\n");
 
    freePrimeNumbers(&primes);
-
    free(terms);
-
-
    return 0;
 }
