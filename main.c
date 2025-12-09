@@ -8,7 +8,7 @@
 
 #include "Queues.h"
 
-#define BASIC_DEBUG 1
+#define BASIC_DEBUG 0
 
 //*DATA_STRUCTURES*//
 typedef enum {
@@ -21,7 +21,6 @@ typedef enum {
 typedef enum {
    Minterm,
    Maxterm,
-   Expression,
    Unknown
 } ExprTableType;
 
@@ -304,11 +303,52 @@ void printCoverTable(const Queue table, const Queue usedPIDs) {
 }
 //*~DEBUG*//
 
-
-//Expression Exp a b c d e f g h i j k, || && ^
 //MinTerm    Min[var count](minterms)(nonmandatory)
 //MaxTerm    Max[var count](maxterms)(nonmandatory)
 //*PARSE INPUT*//
+char** read_lines(const char* filename, unsigned int* out_count) {
+   FILE* f = fopen(filename, "r");
+   if (!f) return NULL;
+
+   unsigned int capacity = 32;
+   unsigned int count = 0;
+   char** lines = malloc(sizeof(char*) * capacity);
+
+   char buffer[4096];
+   while (fgets(buffer, sizeof(buffer), f)) {
+
+      unsigned int len = strlen(buffer);
+
+      // Allocate exact-sized string
+      char* line = malloc(len + 1);
+      memcpy(line, buffer, len + 1);
+
+      // grow array if needed
+      if (count >= capacity) {
+         capacity *= 2;
+         lines = realloc(lines, sizeof(char*) * capacity);
+      }
+
+      lines[count++] = line;
+   }
+   printf("fajl beolvasva\n");
+
+   fclose(f);
+   *out_count = count;
+   return lines;
+}
+
+void writeLines(const char* filename, char** lines, unsigned int count) {
+   FILE* f = fopen(filename, "w");
+   if (!f) return;
+
+   for (int i = 0; i < count; i++) {
+      fputs(lines[i], f);
+   }
+
+   fclose(f);
+}
+
 int countInts(const char* str) {
    int count = 0;
    while (*str) {
@@ -325,7 +365,7 @@ bool isTwoPower(const unsigned int x) {
    return (bool)(x != 0 && (x & (x - 1)) == 0);
 }
 
-unsigned int* parse_int_list(const char* str, unsigned int* count) {
+unsigned int* parseIntList(const char* str, unsigned int* count) {
    *count = countInts(str);
    unsigned int* out = malloc(sizeof(int) * *count);
    int i = 0;
@@ -350,14 +390,11 @@ ExprTableType parseExprTableType(const char* s) {
    if (s[0] == 'M' && s[1] == 'a' && s[2] == 'x') {
       return Maxterm;
    }
-   if (s[0] == 'E' && s[1] == 'x' && s[2] == 'r') {
-      return Expression;
-   }
    return Unknown;
 }
 
 int parse_expr(const char* s, Expr* out) {
-   if (strlen(s) < 10) return 0;
+   if (strlen(s) < 7) return 0;
 
    out->type = parseExprTableType(s);
    if (out->type == Unknown) return 0;
@@ -383,7 +420,7 @@ int parse_expr(const char* s, Expr* out) {
    char* temp = malloc(len+1);
    strncpy(temp, m1 + 1, len);
    temp[len] = 0;
-   out->terms = parse_int_list(temp, &out->terms_count);
+   out->terms = parseIntList(temp, &out->terms_count);
    free(temp);
 
    const char* o1 = strchr(m2 + 1, '(');
@@ -404,7 +441,7 @@ int parse_expr(const char* s, Expr* out) {
    temp = malloc(len+1);
    strncpy(temp, o1 + 1, len);
    temp[len] = 0;
-   out->opt_terms = parse_int_list(temp, &out->opt_terms_count);
+   out->opt_terms = parseIntList(temp, &out->opt_terms_count);
    free(temp);
 
    return 1;
@@ -676,9 +713,16 @@ void freePrimeNumbers(Queue* primes) {
    queue_free(primes);
 }
 
-void freeExpr(Expr* expr) {
+void freeExpr(const Expr* expr) {
    free(expr->terms);
    free(expr->opt_terms);
+}
+
+void freeLines(char** lines, const unsigned int count) {
+   for (int i = 0; i < count; i++) {
+      free(lines[i]);
+   }
+   free(lines);
 }
 
 void quineMcCluskey(const Term* terms, unsigned int count, Queue* primes) {
@@ -870,13 +914,74 @@ void selectRequired(const Term* terms, unsigned int count, Queue* primes, bool h
    queue_free(&table);
    queue_free(&usedPIDs);
 }
-//*~IMPL*//
 
-int main(void) {
-   const char* input = "Max[4](0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15)";
+void writePrimeImplicant(PrimeImplicant primeImplicant, const unsigned int count, const ExprTableType type, char* buffer, unsigned int* index) {
+   char primeNames[32] = {
+      'a','b','c','d','e','f','g',
+      'h','i','j','k','l','m','n',
+      'o','p','q','r','s','t','u',
+      'v','w','x','y','z',
+      'A','B','C','D','E','F'
+   };
+   if (type == Maxterm) {
+      unsigned long long temp = primeImplicant.flippedVariablesFlag;
+      primeImplicant.flippedVariablesFlag = primeImplicant.taggedVariablesFlag;
+      primeImplicant.taggedVariablesFlag = temp;
+   }
+   buffer[(*index)++] = '(';
+   bool first = true;
+   for (int j = 0; j < count; ++j) {
+      if (HasFlag(primeImplicant.taggedVariablesFlag, 1 << j)) {
+         if (!first) {
+            buffer[(*index)++] = ' ';
+            if (!type == Maxterm) buffer[(*index)++] = '&';
+            if (type == Maxterm) buffer[(*index)++] = '|';
+            buffer[(*index)++] = ' ';
+         }
+         first = false;
+         buffer[(*index)++] = primeNames[count - j - 1];
+      }
+   }
+   for (int j = 0; j < count; ++j) {
+      if (HasFlag(primeImplicant.flippedVariablesFlag, 1 << j)) {
+         if (!first) {
+            buffer[(*index)++] = ' ';
+            if (!type == Maxterm) buffer[(*index)++] = '&';
+            if (type == Maxterm) buffer[(*index)++] = '|';
+            buffer[(*index)++] = ' ';
+         }
+         first = false;
+         buffer[(*index)++] = '!';
+         buffer[(*index)++] = primeNames[count - j - 1];
+      }
+   }
+   if ((primeImplicant.taggedVariablesFlag & ((1 << count) -1)) == 0
+      && (primeImplicant.flippedVariablesFlag & ((1 << count) -1)) == 0) {
+      if (type == Maxterm) {
+         buffer[(*index)++] = '0';
+      } else {
+         buffer[(*index)++] = '1';
+      }
+   }
+   buffer[(*index)++] = ')';
+}
+
+char* processLine(char* input) {
+   for (int i = 0; i < strlen(input); ++i) {
+      if (input[i] == '\n') input[i] = '\0';
+   }
+   char* output = NULL;
    Expr expr;
 
-   if (!parse_expr(input, &expr)) return 1;
+   if (!parse_expr(input, &expr)) {
+      const unsigned int length = strlen(input);
+      output = malloc(length + 2);
+      if (!output) return NULL;
+      memcpy(output, input, length + 1);
+      output[length] = '\n';
+      output[length + 1] = '\0';
+      return output;
+   }
    Term* terms = parse_term(expr);
    freeExpr(&expr);
 
@@ -903,17 +1008,79 @@ int main(void) {
    if (BASIC_DEBUG) printf("\n");
 
    selectRequired(terms, expr.var_count, &primes, expr.hazardFree);
+
+   char buffer[1024] = {0};
+   unsigned int index = strlen(input);
+   memcpy(buffer, input, index);
+   buffer[index++] = ' ';
+   buffer[index++] = '=';
+   buffer[index++] = ' ';
+
    for (int i = 0; i < primes.length; ++i) {
       NPrimeImplicant prime;
       queue_nPrim_get(&primes, i, &prime);
       printPrimesNumbers(prime);
       PrimeImplicant p = convertToNormal(prime);
       printPrimeImplicant(p, expr.var_count, expr.type);
+      writePrimeImplicant(p, expr.var_count, expr.type, buffer, &index);
+      if (i < primes.length-1) {
+         if (expr.type == Maxterm) {
+            buffer[index++] = ' ';
+            buffer[index++] = '&';
+            buffer[index++] = ' ';
+         }
+         if (expr.type == Minterm) {
+            buffer[index++] = ' ';
+            buffer[index++] = '|';
+            buffer[index++] = ' ';
+         }
+      }
       if (BASIC_DEBUG) printf("\n");
    }
    if (BASIC_DEBUG) printf("\n");
+   if (primes.length == 0) {
+      if (expr.type == Maxterm) {
+         buffer[index++] = '1';
+      } else {
+         buffer[index++] = '0';
+      }
+   }
 
    freePrimeNumbers(&primes);
    free(terms);
+
+   buffer[index++] = '\n';
+   buffer[index++] = 0;
+   const unsigned int length = strlen(buffer);
+   output = malloc(length + 1);
+   if (!output) return NULL;
+   memcpy(output, buffer, length + 1);
+
+   return output;
+}
+//*~IMPL*//
+
+int main(void) {
+   char inputFileName[256] = "input.txt";
+   char outputFileName[256] = "output.txt";
+
+   // printf("Specify input file name:\n");
+   // scanf("%255s", inputFileName);
+   //
+   // printf("Specify output file name:\n");
+   // scanf("%255s", outputFileName);
+
+   unsigned int length = 0;
+   char** inputs = read_lines(inputFileName, &length);
+   if (length == 0 || !inputs) return 0;
+
+   for (int i = 0; i < length; ++i) {
+      char* line = inputs[i];
+      inputs[i] = processLine(line);
+      free(line);
+   }
+
+   writeLines(outputFileName, inputs, length);
+   freeLines(inputs, length);
    return 0;
 }
